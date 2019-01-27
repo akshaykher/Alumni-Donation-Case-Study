@@ -1,0 +1,309 @@
+---
+title: "Alumni Donation Case Study"
+author: "Group 9"
+date: "25th November, 2018"
+output:
+  html_document:
+    fig_height: 4
+    highlight: pygments
+    theme: spacelab
+  pdf_document: default
+  word_document: default
+---
+# {.tabset .tabset-fade}
+
+## Setup 
+
+### Load packages
+
+```{r load-packages, message = FALSE}
+library(dplyr)
+library(ggplot2)
+library(GGally)
+library(tidyr)
+library(lubridate)
+library(tibble)
+library(knitr)
+library(statsr)
+library(SignifReg)
+library(tidyverse)
+library(car)
+```
+
+* * *
+
+## 1. Introduction 
+
+Alumni donations are an important source of revenue for colleges and universities. If administrators could determine the factors that influence increased donation among alumni's, they might be able to implement policies that could lead to increased revenues. Research shows that students who are more satisfied with their contact with teachers are more likely to graduate. As a result, one might suspect that smaller class sizes and lower student-faculty ratios might leads to a higher percentage of satisfied graduates, which in turn might lead to increased alumni donations.  **We have taken a dataset containing information of 48 national universities (America's Best Colleges, Year 2000 Edition) and studied how the different factors affect the alumni giving rate. We have implemented a multiple linear regression model to answer this question.** 
+
+* * *
+
+## 2. Data Description
+
+The alumni data set has **5 variables and 48 observations**:
+
+* **School**: Name of the school.
+* **Percent_of_classes_under_20**: The percentage of classes offered with fewer than 20 students.
+* **Student_faculty_ratio**: The ratio of the students enrolled to the number of faculty in school.
+* **Alumni_giving_rate**: The percentage of alumni that donated to the university.
+* **Private**: This is an indicator variable indicating if the school is a private (1) or public institute (0). 
+
+### Summary Statistics:
+
+* **alumni_giving_rate** ranges from 7% to 67% with an average of 30% and no missing values.
+* **percent_of_classes_under_20** ranges from 29% to 77% with an average of 48% and no missing values.
+* **student_faculty_ratio** ranges from 3 to 23 with an average of 12 and no missing values. 
+
+**All values are reasonable and there seems to be no outlier.**
+```{r}
+# Reading Data
+url <- "https://bgreenwell.github.io/uc-bana7052/data/alumni.csv"
+alumni <- read.csv(url)
+
+summary_fn <- function(x)
+{
+  alumni %>% 
+  summarise(min=min(x),
+            max=max(x),
+            range=diff(range(x)),
+            mean=round(mean(x),2),
+            median=median(x),
+            missing=sum(is.na(x)),
+            Q1=quantile(x,probs=0.25),
+            Q2=quantile(x,probs=0.75))
+}
+
+summary_data <- rbind(summary_fn(alumni$alumni_giving_rate),
+                      summary_fn(alumni$percent_of_classes_under_20),
+                      summary_fn(alumni$student_faculty_ratio))
+summary_data <-
+summary_data %>% 
+  mutate(Variable = c("alumni_giving_rate",
+                      "percent_of_classes_under_20",
+                      "student_faculty_ratio")) %>% 
+  select(Variable,everything())
+
+kable(summary_data)
+
+```
+
+
+### Plots:
+* The distribution of **alumni_giving_rate** seems bi-modal and right skewed. 
+* The distribution of of **percent_of_classes_under_20** seems bi-modal as well. It has a high positive correlation of 0.646 with the response variable.
+* The distribution of **student_faculty_ratio** seems right skewed. It has a high negative correlation of -0.742 with the response variable.
+* Roughly **70% of the sampled schools are Private**. Also, Private schools seem to have a positive association with the alumni_giving_rate.
+* All predictor variables seem to have strong correlation among them. We will need to **check for multi-collinearity post model building**.
+```{r}
+alumni %>%
+select(alumni_giving_rate,percent_of_classes_under_20,student_faculty_ratio,private) %>%
+ggpairs()
+```
+
+
+
+## 3. Modeling and Results {.tabset .tabset-fade .tabset-pills}
+
+### Building the Model
+
+Using the **Exploratory Data Analysis**, these are the predictor variables which have some association with the alumni giving rate:
+
+* student_faculty_ratio
+* percent_of_classes_under_20
+* private
+
+***
+
+Now we will run a **forward-selection** algorithm to determine the best possible predictor variables based on $R^2_{adj}$. The methodology is as follows:
+
+1. Start with single predictor regression of response vs each explanatory variable
+2. Pick the model with the hightest $R^2_{adj}$
+3. Add remaining variables one at a time to the existing model, and pick the model with the highest $R^2_{adj}$
+4. Repeat until the addition of any of the remaining variables does not result in a higher $R^2_{adj}$
+
+> Note: The alpha used is 0.1 and Bonferroni correction helps reduce the Type-I error rate.
+
+The model selects only **student_faculty_ratio** as the predictor variable with an $R^2_{adj} =$ 0.54
+
+```{r}
+# The range of variables that the forward-selection algorithm will examine
+scope <- alumni_giving_rate ~
+  percent_of_classes_under_20 +
+  student_faculty_ratio +
+  private
+
+# Building the final model using forward-selection algorithm
+model <- SignifReg(scope=scope,
+                   data=alumni,
+                   alpha=0.1,
+                   direction="forward",
+                   criterion="r-adj",
+                   correction="FDR")
+
+summary(model)
+```
+
+***
+
+Using the residuals vs fitted-values plot, we can conclude that the **constant variance assumption is being violated** for this model. The variance is fanning out i.e. increasing with increase in fitted_values.
+```{r}
+# Constructing a dataframe containing model attributes
+model_attributes <-
+data.frame(index=1:nrow(alumni),
+           residuals = model$residuals, 
+           fitted_values = model$fitted.values)
+
+# Residuals vs Fitted-Values Plot
+ggplot(model_attributes, aes(x=fitted_values,y=residuals)) +
+  geom_point() +
+  geom_hline(yintercept = 0, color = "red") +
+  geom_abline(intercept = 0, slope = 0.7, color = "blue") +
+  geom_abline(intercept = 0, slope = -0.7, color = "blue") +
+  ylim(-25, 25)
+```
+
+***
+
+To fix the non-constant variance problem we can apply **Box-Cox Transformation** to the response variable (Y) where:
+
+$$Y^\lambda_{i} = (Y^\lambda_{i}-1)/\lambda\; for \; \lambda \neq 0$$
+
+$$Y^\lambda_{i} = ln(Y{}i)\; for \; \lambda = 0$$
+
+The $\lambda$ obtained by the Box-Cox function is approximately 0.5
+```{r}
+MASS::boxcox(alumni_giving_rate ~ student_faculty_ratio, data = alumni)
+```
+
+***
+
+Applying **forward-selection** algorithm using the transformed response variable i.e. $Y^\lambda_{i} = (Y^\lambda_{i}-1)/\lambda$ for $\lambda =$ 0.5
+
+The **final model** selects  **student_faculty_ratio** and **private** as the predictor variables with an $R^2_{adj} =$ 0.60.
+```{r}
+lambda=0.5
+alumni$alumni_giving_rate_boxcox <- (alumni$alumni_giving_rate^lambda-1)/lambda
+
+scope <- alumni_giving_rate_boxcox ~
+  percent_of_classes_under_20 +
+  student_faculty_ratio +
+  private
+
+model1 <- SignifReg(scope=scope,
+                    data=alumni,
+                    alpha=0.1,
+                    direction="forward",
+                    criterion="r-adj",
+                    correction="FDR")
+
+summary(model1)
+
+```
+
+### Model Diagnostics
+
+We will check if our **final model** satistfies all the assumptions:
+
+***
+
+1. **Errors are normally distributed with mean=0**
+
+Using a Histogram, errors seem to be normally distributed and centred at 0.
+
+```{r}
+
+# Constructing a dataframe containing model attributes
+model_attributes1 <-
+data.frame(index=1:nrow(alumni),
+           residuals = model1$residuals, 
+           fitted_values = model1$fitted.values)
+
+# Plotting Histogram of Residuals
+model_attributes1 %>% 
+  ggplot(aes(x=residuals)) +
+  geom_histogram(binwidth=2) 
+```
+
+***
+Using a Q-Q Plot, errors seem to be normally distributed as well.
+
+```{r}
+# Constructing Q-Q Plot
+qqnorm(model_attributes1$residuals)
+qqline(model_attributes1$residuals, col='red')
+```
+
+2. **Uncorrelated Errors **
+
+There seems to be no pattern for the errors over time (index). Thus we can safely assume that the errors are uncorrelated.
+
+```{r}
+# Plotting Residuals over Time
+model_attributes1 %>%
+  ggplot(aes(x=index,y=residuals)) +
+  geom_point()
+```
+
+3. **Constance Variance**
+
+We can clearly see that the residuals are constantly varied across the fitted values.
+
+```{r}
+# Residuals vs Fitted-Value Plot
+ggplot(model_attributes1, aes(x=fitted_values,y=residuals)) +
+  geom_point() +
+  geom_hline(yintercept = 0, color = "red") +
+  geom_hline(yintercept = 3, color = "blue") +
+  geom_hline(yintercept = -3, color = "blue")
+```
+
+4. **Predictor Variables are independent of each other**
+
+As the **Variation Inflation Factor** < 5 for each predictor variable, we can assume that there is no multi-collinearity.
+
+```{r}
+vif(model1)
+```
+
+5. **No influential outliers**
+
+Almost all **standardized errors** are below the absolute value of 2. Thus we do not have any extreme outliers that may be influencing the regression line. 
+
+```{r}
+# Plotting Studentized/Standardized Errors
+rstan <- rstandard(model1)  
+plot(rstan)
+```
+
+### Results
+
+* $(Y^\lambda_{i}-1)/\lambda\;$ = output variable
+* **60% variance** in the output variable is explained by student_faculty_ratio and private.
+* All held constant, with 1 unit increase in student_faculty_ratio, the average output **decreases by 0.27 units**.
+* A more concrete way of elaborating the above point would be: All held constant, we are **95 % confident** that with 1 unit increase in student_faculty_ratio, the average output **decreases by 0.11 - 0.43 units**.
+* All held constant, *Private Schools'* output variable is, on an average, **1.66** points higher than the *Non-Private Schools'* output variable.
+* A more concrete way of elaborating the above point would be: All held constant, we are 90% confident that *Private Schools'* output variable is, on an average, **0.27-2.3 points higher** than the *Non-Private Schools'* output variables.
+* The **t-tests** correspond to the following hypothesis test:
+    + H0: Beta = 0
+    + HA: Beta !=0
+    + For all p-values < 0.05, we reject H0
+    + We can see that for student_faculty_ratio the p-value < 0.05. **Thus the Beta estimate is significant**. For private, although the Beta is not significant but **we keep this variables as it gives higher $R^2_{adj}$.**
+* The **f-test** correspond to the following hypothesis test:
+    + H0: All Beta's = 0
+    + HA: At least one Beta != 0
+    + As p-value < 0.05, we reject H0. **Thus our model as a whole is significant**. 
+
+## 4. Discussion
+
+### Improving the model with additional data
+
+* Is it possible that universities that are older and "more established", will have a larger number of successful alumni who are more inclined to donate to their alma mater?
+* Will undergraduate enrollment size determine alumni giving rate? Can we say that larger number of undergrads by sheer numbers donate more as a percentage?
+* Does the current endowment size affect student experience and influence their decisions to donate as alumni?
+* Can the alumni relations teams' effectiveness and competency to raise funds be a factor?
+* Are Universities located at key geographic centers (big cities, industrial hubs), have an alumni base nearby that is more interested in University affairs after graduation?
+
+*Some of this data is easy to obtain: A quick search on each University gives us the Year Established, Number of Undergrads and Current Endowment Size. However, some of the data is subjective; like measuring alumni relations team's effectiveness.*
+
+
+* * *
